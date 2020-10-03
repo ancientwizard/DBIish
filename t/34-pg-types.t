@@ -49,7 +49,8 @@ is $sth.rows, 1,			    '1 row';
 my ($col1) = $sth.row;
 isa-ok $col1, Str;
 is $col1, 'test',			    'Test';
-$dbh.Converter{Str} = sub ($) { 'changed' };
+
+$dbh.register-type-conversion(db-type => 'text', raku-type => Str, from-db-sub => sub (Str $value) {'changed'});
 
 $sth.execute;
 is $sth.rows, 1,			    '1 row';

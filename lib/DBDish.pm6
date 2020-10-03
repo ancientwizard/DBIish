@@ -37,22 +37,56 @@ role Driver does DBDish::ErrorHandling {
     }
 }
 
-role TypeConverter does Associative {
+role TypeConverterFromDB does Associative {
     has Callable %!Conversions{Mu:U} handles <AT-KEY EXISTS-KEY>;
 
     # The role implements the conversion
-    method convert (::?CLASS:D: Str $datum, Mu:U $type) {
+    method convert (::?CLASS:D: $datum, Mu:U $type) {
         with %!Conversions{$type} -> &converter {
             &converter.signature.params.any ~~ .named
                     ?? converter($datum, :$type)
                     !! converter($datum);
+        } elsif $type.^name eq 'Any' {
+            # Since there is no type specified, fallback to string.
+            # This will apply to most user-defined database types such as enums unless they add a special converter
+            $datum.defined ?? Str($datum) !! Str(Nil);
         } else { # Common case
             Str.can($type.^name) ?? $type($datum) !! $type.new($datum);
         }
     }
+
     method STORE(::?CLASS:D: \to_store) {
         for @(to_store) {
             when Callable { %!Conversions{$_.signature.returns} = $_ }
+            when Pair { %!Conversions{::($_.key)} = $_.value }
+        }
+    }
+}
+
+role TypeConverterToDB does Associative {
+    has Callable %!Conversions{Mu:U} handles <AT-KEY EXISTS-KEY>;
+
+    # The role implements the conversion:
+    method convert (::?CLASS:D: Mu $datum --> Str) {
+        my Mu:U $type = $datum.WHAT;
+
+        # Normalize Buf. Due to an implementation quirk, Buf != Buf.new(^256)
+        # but whateverable can handle it. Convert to a static term for hash lookup purposes.
+        $type = Buf if ($type ~~ Buf);
+
+        with %!Conversions{$type} -> &converter {
+            converter($datum);
+        } else { # Common case. Convert using simple stringification.
+            Str($datum);
+        }
+    }
+    method STORE(::?CLASS:D: \to_store) {
+        for @(to_store) {
+            when Callable {
+                my Mu:U $type = $_.signature.params[0].type;
+                $type = Buf if ($type ~~ Buf);
+                %!Conversions{$type} = $_;
+            }
             when Pair { %!Conversions{::($_.key)} = $_.value }
         }
     }

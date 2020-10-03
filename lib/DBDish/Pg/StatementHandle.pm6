@@ -62,15 +62,21 @@ submethod BUILD(:$!parent!, :$!pg-conn!, # Per protocol
 method execute(**@params --> DBDish::StatementHandle) {
     self!enter-execute(@params.elems, @!param-type.elems);
 
+    my %Converter := $!parent.Converter-To-DB;
+
     $!parent.protect-connection: {
         my @param_values := ParamArray.new;
-        for @params.kv -> $k, $v {
-            if $v.defined {
-                @param_values[$k] = @!param-type[$k] ~~ Buf
-                        ?? $!pg-conn.escapeBytea(($v ~~ Buf) ?? $v !! ~$v.encode)
-                        !! @!param-type[$k] ~~ Array ?? self.pg-array-str($v)
-                        !! ~$v;
-            } else { @param_values[$k] = Str }
+        for @params.kv -> $k, $val {
+            if $val.defined {
+                my $have-type = $val.WHAT;
+                if $have-type ~~ Array {
+                    @param_values[$k] = self.pg-array-str($val);
+                } else {
+                    @param_values[$k] = %Converter.convert($val);
+                }
+            } else {
+                @param_values[$k] = Str;
+            }
         }
 
         $!result = $!statement-name
@@ -101,17 +107,20 @@ method _row() {
     my $l = ();
     if $!Executed && $!field-count && $!current-row < $!row-count {
         my $col = 0;
-        my %Converter := $!parent.Converter;
+        my %Converter := $!parent.Converter-From-DB;
         $l = do for @!column-type -> \ct {
             my $value = ct;
             unless $!result.PQgetisnull($!current-row, $col) {
                 $value = $!result.PQgetvalue($!current-row, $col);
                 if ct ~~ Array {
+                    # Ideally this would be a branch registered in %!Converter-From-DB
                     $value = _pg-to-array($value, ct.of, %Converter);
-                } elsif (ct.^name ne 'Any') {
+                } else {
+                    # This includes DB Null which is type 'Any'
                     $value = %Converter.convert($value, ct);
                 }
             }
+
             $col++;
             $value;
         }
@@ -176,15 +185,19 @@ sub _pg-to-array(Str $text, Mu:U $type, %Converter) {
 }
 
 method pg-array-str(\arr) {
+    my %Converter := $!parent.Converter-To-DB;
+
     my @tmp;
     my @data := arr ~~ Array ?? arr !! [ arr ];
     for @data -> $c {
         if $c ~~ Array {
             @tmp.push(self.pg-array-str($c));
-        } elsif $c ~~ Numeric {
-            @tmp.push($c);
         } else {
-            my $t = $c.subst('\\', '\\\\', :g).subst('"', '\\"', :g);
+            # Convert $c from Raku object value to DB string value if necessary.
+            my $t = %Converter.convert($c);
+
+            # Escape the converted value and push it into the array string.
+            $t = $t.subst('\\', '\\\\', :g).subst('"', '\\"', :g);
             @tmp.push('"'~$t~'"');
         }
     }
